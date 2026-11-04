@@ -45,13 +45,15 @@ pnpm dev
 
 ## Production
 
-Build the application for production:
+This app runs as a client-side SPA (`ssr: false`). Generate the static files:
 
 ```bash
-pnpm build
+pnpm generate
 ```
 
-Locally preview production build:
+The output in `.output/public` can be served by any static host. Configure the host to fall back to `200.html` (or `index.html`) for unknown routes so client-side routing works.
+
+Locally preview the generated build:
 
 ```bash
 pnpm preview
