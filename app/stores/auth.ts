@@ -1,4 +1,5 @@
 import { useQueryCache } from '@pinia/colada'
+import { StorageSerializers } from '@vueuse/core'
 
 // Signs in to a WordPress site with an application password.
 // The session (including the application password) is kept in this browser only:
@@ -10,30 +11,20 @@ function isSession(value: unknown): value is WpSession {
   return !!s?.root?.siteUrl && !!s.username && !!s.appPassword && !!s.user?.id
 }
 
-function readStoredSession(): WpSession | null {
-  for (const storage of [sessionStorage, localStorage]) {
-    const raw = storage.getItem(STORAGE_KEY)
-    if (!raw) continue
-    try {
-      const parsed: unknown = JSON.parse(raw)
-      if (isSession(parsed)) return parsed
-    } catch {
-      // fall through and drop the corrupt entry
-    }
-    storage.removeItem(STORAGE_KEY)
-  }
-  return null
-}
-
-function clearStoredSession() {
-  sessionStorage.removeItem(STORAGE_KEY)
-  localStorage.removeItem(STORAGE_KEY)
-}
-
 export const useAuthStore = defineStore('auth', () => {
   const queryCache = useQueryCache()
 
-  const session = ref<WpSession | null>(import.meta.server ? null : readStoredSession())
+  // Reactive storage refs: `null` removes the key. The localStorage copy also syncs
+  // across tabs, so signing out in one tab signs out the others.
+  const storageOptions = { serializer: StorageSerializers.object }
+  const tabSession = useSessionStorage<WpSession | null>(STORAGE_KEY, null, storageOptions)
+  const rememberedSession = useLocalStorage<WpSession | null>(STORAGE_KEY, null, storageOptions)
+
+  const session = computed<WpSession | null>(() => {
+    if (isSession(tabSession.value)) return tabSession.value
+    if (isSession(rememberedSession.value)) return rememberedSession.value
+    return null
+  })
 
   const user = computed(() => session.value?.user ?? null)
   const siteUrl = computed(() => session.value?.root.siteUrl ?? '')
@@ -42,18 +33,20 @@ export const useAuthStore = defineStore('auth', () => {
 
   async function login(credentials: WpCredentials & { remember?: boolean }) {
     const next = await connectWordPress(credentials)
-    clearStoredSession()
-    const storage = credentials.remember ? localStorage : sessionStorage
-    storage.setItem(STORAGE_KEY, JSON.stringify(next))
-    session.value = next
+    tabSession.value = credentials.remember ? null : next
+    rememberedSession.value = credentials.remember ? next : null
   }
 
   function logout() {
-    clearStoredSession()
-    session.value = null
-    // Drop every cached WordPress response so nothing leaks into the next session.
-    for (const entry of queryCache.getEntries({ key: ['wp'] })) queryCache.remove(entry)
+    tabSession.value = null
+    rememberedSession.value = null
   }
+
+  // Drop every cached WordPress response whenever the session ends (including a
+  // sign-out in another tab), so nothing leaks into the next session.
+  whenever(() => !loggedIn.value, () => {
+    for (const entry of queryCache.getEntries({ key: ['wp'] })) queryCache.remove(entry)
+  })
 
   function request<T>(path: string, options?: WpRequestOptions) {
     if (!session.value) throw new WpError('not_signed_in', 'You are not signed in.')

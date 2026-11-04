@@ -111,7 +111,7 @@ async function readJson<T>(res: Response): Promise<T | null> {
 }
 
 /** WordPress returns some strings with HTML tags and entities (e.g. "&amp;"); convert to plain text. */
-function stripTags(value: string): string {
+export function stripTags(value: string): string {
   return (new DOMParser().parseFromString(value, 'text/html').body.textContent ?? '').trim()
 }
 

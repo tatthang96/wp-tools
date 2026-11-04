@@ -11,7 +11,7 @@ const PER_PAGE = 20
 const { siteUrl } = storeToRefs(useAuthStore())
 
 const search = ref('')
-const debouncedSearch = ref('')
+const debouncedSearch = refDebounced(computed(() => search.value.trim()), 300)
 const role = ref('all')
 const sort = ref<UsersSort>('newest')
 const page = ref(1)
@@ -52,15 +52,6 @@ const errorMessage = computed(() => {
 function loadUsers() {
   refetch()
 }
-
-let searchTimer: ReturnType<typeof setTimeout> | undefined
-watch(search, (value) => {
-  clearTimeout(searchTimer)
-  searchTimer = setTimeout(() => {
-    debouncedSearch.value = value.trim()
-  }, 300)
-})
-onBeforeUnmount(() => clearTimeout(searchTimer))
 
 // New filters start from the first page. `sync` resets the page before the query
 // key is re-evaluated, so we don't fetch the old page number with the new filters.

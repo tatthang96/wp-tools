@@ -10,6 +10,10 @@ const links: NavigationMenuItem[][] = [[{
   to: '/admin',
   exact: true
 }, {
+  label: 'Posts',
+  icon: 'i-lucide-file-text',
+  to: '/admin/posts'
+}, {
   label: 'Users',
   icon: 'i-lucide-users',
   to: '/admin/users'
@@ -23,6 +27,9 @@ async function signOut() {
   auth.logout()
   await navigateTo('/')
 }
+
+// The session can also end elsewhere, e.g. signing out in another tab.
+whenever(() => !auth.loggedIn, () => navigateTo('/'))
 
 const userMenu = computed<DropdownMenuItem[][]>(() => [[{
   label: user.value?.email || user.value?.username || '',
