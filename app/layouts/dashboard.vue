@@ -2,7 +2,9 @@
 import type { DropdownMenuItem, NavigationMenuItem } from '@nuxt/ui'
 
 const auth = useAuthStore()
-const { user, siteUrl, siteName } = storeToRefs(auth)
+const { user, siteUrl, sessions } = storeToRefs(auth)
+const { signOutCurrent, signOutAll } = useSiteSwitch()
+const addSiteOpen = useAddSiteDialog()
 
 const links: NavigationMenuItem[][] = [[{
   label: 'Overview',
@@ -23,11 +25,6 @@ const links: NavigationMenuItem[][] = [[{
   to: '/admin/settings'
 }]]
 
-async function signOut() {
-  auth.logout()
-  await navigateTo('/')
-}
-
 // The session can also end elsewhere, e.g. signing out in another tab.
 whenever(() => !auth.loggedIn, () => navigateTo('/'))
 
@@ -44,10 +41,17 @@ const userMenu = computed<DropdownMenuItem[][]>(() => [[{
   icon: 'i-lucide-settings',
   to: '/admin/settings'
 }], [{
-  label: 'Sign out',
+  label: sessions.value.length > 1 ? 'Sign out of this site' : 'Sign out',
   icon: 'i-lucide-log-out',
-  onSelect: signOut
-}]])
+  onSelect: signOutCurrent
+}, ...(sessions.value.length > 1
+  ? [{ label: 'Sign out of all sites', icon: 'i-lucide-log-out', color: 'error' as const, onSelect: signOutAll }]
+  : [])]])
+
+function onSiteAdded() {
+  addSiteOpen.value = false
+  navigateTo('/admin')
+}
 </script>
 
 <template>
@@ -57,21 +61,7 @@ const userMenu = computed<DropdownMenuItem[][]>(() => [[{
       resizable
     >
       <template #header="{ collapsed }">
-        <ULink
-          :to="siteUrl"
-          target="_blank"
-          class="flex min-w-0 items-center gap-2 px-1"
-          :title="siteUrl"
-        >
-          <UIcon
-            name="i-simple-icons-wordpress"
-            class="size-5 shrink-0 text-primary"
-          />
-          <span
-            v-if="!collapsed"
-            class="truncate font-semibold text-highlighted"
-          >{{ siteName || 'WP Tools' }}</span>
-        </ULink>
+        <SiteSwitcher :collapsed="collapsed" />
       </template>
 
       <template #default="{ collapsed }">
@@ -103,5 +93,19 @@ const userMenu = computed<DropdownMenuItem[][]>(() => [[{
     </UDashboardSidebar>
 
     <slot />
+
+    <UModal
+      v-model:open="addSiteOpen"
+      title="Add a site"
+      :ui="{ content: 'max-w-md' }"
+    >
+      <template #body>
+        <ConnectSiteForm
+          title="Connect another site"
+          description="Add a WordPress site (or a multisite subsite) to switch between in the sidebar."
+          @connected="onSiteAdded"
+        />
+      </template>
+    </UModal>
   </UDashboardGroup>
 </template>

@@ -5,7 +5,7 @@ import { pluginsQuery, usersStatsQuery } from '~/queries/wordpress'
 definePageMeta({ layout: 'dashboard' })
 useHead({ title: 'Overview' })
 
-const { user, siteName, siteUrl } = storeToRefs(useAuthStore())
+const { user, siteName, siteUrl, sessions } = storeToRefs(useAuthStore())
 
 const plugins = useQuery(pluginsQuery)
 const usersStats = useQuery(usersStatsQuery)
@@ -59,8 +59,10 @@ const stats = computed(() => [{
   label: 'Sites',
   icon: 'i-lucide-globe',
   result: {
-    value: '1',
-    caption: siteUrl.value ? new URL(siteUrl.value).host : ''
+    value: number.format(sessions.value.length),
+    caption: sessions.value.length > 1
+      ? `Connected · viewing ${siteUrl.value ? new URL(siteUrl.value).host : ''}`
+      : (siteUrl.value ? new URL(siteUrl.value).host : '')
   } as StatResult
 }, {
   label: 'Plugins',

@@ -1,4 +1,6 @@
 <script setup lang="ts">
+const auth = useAuthStore()
+
 useHead({
   meta: [
     { name: 'viewport', content: 'width=device-width, initial-scale=1' }
@@ -16,7 +18,8 @@ useHead({
 <template>
   <UApp>
     <NuxtLayout>
-      <NuxtPage />
+      <!-- Keyed by the active site, so pages remount with fresh state after switching sites. -->
+      <NuxtPage :page-key="route => `${auth.currentId ?? 'guest'}:${route.path}`" />
     </NuxtLayout>
   </UApp>
 </template>

@@ -3,7 +3,18 @@ definePageMeta({ layout: 'dashboard' })
 useHead({ title: 'Settings' })
 
 const auth = useAuthStore()
-const { user, siteUrl, siteName, session } = storeToRefs(auth)
+const { user, siteUrl, siteName, session, sessions, currentId } = storeToRefs(auth)
+const { switchSite, signOutCurrent } = useSiteSwitch()
+const addSiteOpen = useAddSiteDialog()
+
+const sites = computed(() => sessions.value.map(s => ({
+  id: sessionId(s),
+  name: s.siteName,
+  url: s.root.siteUrl,
+  user: s.user.name,
+  avatar: s.user.avatar,
+  remembered: auth.isRemembered(sessionId(s))
+})))
 
 const details = computed(() => [
   { label: 'Site', value: siteName.value },
@@ -15,9 +26,9 @@ const details = computed(() => [
   { label: 'REST API', value: session.value?.root.pretty ? '/wp-json/' : '?rest_route= (plain permalinks)' }
 ])
 
-async function signOut() {
-  auth.logout()
-  await navigateTo('/')
+function removeSite(id: string) {
+  if (id === currentId.value) signOutCurrent()
+  else auth.removeSession(id)
 }
 </script>
 
@@ -33,6 +44,65 @@ async function signOut() {
 
     <template #body>
       <div class="max-w-2xl space-y-6">
+        <UPageCard
+          title="Connected sites"
+          description="Sites saved in this browser. Switch between them from the site menu at the top of the sidebar."
+          variant="subtle"
+        >
+          <ul class="divide-y divide-default">
+            <li
+              v-for="site in sites"
+              :key="site.id"
+              class="flex flex-wrap items-center gap-3 py-3 first:pt-0 last:pb-0"
+            >
+              <UAvatar
+                :src="site.avatar"
+                :alt="site.user"
+                size="sm"
+              />
+              <div class="min-w-0 flex-1">
+                <p class="flex items-center gap-2 truncate text-sm font-medium text-highlighted">
+                  {{ site.name }}
+                  <UBadge
+                    v-if="site.id === currentId"
+                    label="Active"
+                    color="primary"
+                    variant="subtle"
+                    size="sm"
+                  />
+                </p>
+                <p class="truncate text-xs text-muted">
+                  {{ site.url }} · {{ site.user }} · {{ site.remembered ? 'remembered on this device' : 'this tab only' }}
+                </p>
+              </div>
+              <UButton
+                v-if="site.id !== currentId"
+                label="Switch"
+                color="neutral"
+                variant="outline"
+                size="sm"
+                @click="switchSite(site.id)"
+              />
+              <UButton
+                label="Sign out"
+                color="error"
+                variant="ghost"
+                size="sm"
+                @click="removeSite(site.id)"
+              />
+            </li>
+          </ul>
+          <div>
+            <UButton
+              label="Add site"
+              icon="i-lucide-plus"
+              color="neutral"
+              variant="outline"
+              @click="addSiteOpen = true"
+            />
+          </div>
+        </UPageCard>
+
         <UPageCard
           title="WordPress connection"
           description="This dashboard is signed in to your site with an application password."
@@ -79,10 +149,10 @@ async function signOut() {
             />
             <UButton
               icon="i-lucide-log-out"
-              label="Sign out"
+              label="Sign out of this site"
               color="error"
               variant="soft"
-              @click="signOut"
+              @click="signOutCurrent"
             />
           </div>
         </UPageCard>
