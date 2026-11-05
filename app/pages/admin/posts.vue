@@ -308,19 +308,24 @@ const columns = computed<TableColumn<WpPost>[]>(() => {
     header: 'Title',
     cell: ({ row }) => {
       const post = row.original
-      const badges = []
-      if (post.status !== 'publish' && STATUS_BADGES[post.status]) {
-        badges.push(h(UBadge, { ...STATUS_BADGES[post.status], variant: 'subtle', size: 'sm' }))
-      }
-      if (post.sticky) badges.push(h(UBadge, { label: 'Sticky', color: 'neutral', variant: 'outline', size: 'sm' }))
       return h('div', { class: 'flex min-w-0 max-w-md flex-wrap items-center gap-2' }, [
         h(ULink, {
           to: fullAccess.value ? editUrl(post) : post.link,
           target: '_blank',
           class: 'truncate font-medium text-highlighted hover:text-primary'
         }, () => postTitle(post)),
-        ...badges
+        post.sticky ? h(UBadge, { label: 'Sticky', color: 'neutral', variant: 'outline', size: 'sm' }) : null
       ])
+    }
+  }, {
+    id: 'status',
+    header: 'Status',
+    cell: ({ row }) => {
+      const badge = STATUS_BADGES[row.original.status]
+      // Custom statuses registered by plugins fall back to their raw slug.
+      return h(UBadge, badge
+        ? { ...badge, variant: 'subtle' }
+        : { label: row.original.status, color: 'neutral', variant: 'subtle' })
     }
   }, {
     id: 'author',
