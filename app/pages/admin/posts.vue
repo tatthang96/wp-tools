@@ -298,6 +298,16 @@ const selectedPosts = computed(() => Object.entries(rowSelection.value)
   .filter((post): post is WpPost => !!post)
 )
 
+// --- Editing in a drawer -----------------------------------------------------
+
+const editingId = ref<number | null>(null)
+const editorOpen = ref(false)
+
+function editPost(post: WpPost) {
+  editingId.value = post.id
+  editorOpen.value = true
+}
+
 const confirmDelete = ref<WpPost[] | null>(null)
 const confirmOpen = computed({
   get: () => !!confirmDelete.value,
@@ -358,7 +368,8 @@ function rowActions(post: WpPost): DropdownMenuItem[][] {
 
   const isPublic = post.status === 'publish' || post.status === 'private'
   const main: DropdownMenuItem[] = [
-    { label: 'Edit in WP Admin', icon: 'i-lucide-pencil', to: editUrl(post), target: '_blank' },
+    { label: 'Edit', icon: 'i-lucide-pencil', onSelect: () => editPost(post) },
+    { label: 'Edit in WP Admin', icon: 'i-simple-icons-wordpress', to: editUrl(post), target: '_blank' },
     isPublic
       ? { label: 'View', icon: 'i-lucide-external-link', to: post.link, target: '_blank' }
       : { label: 'Preview', icon: 'i-lucide-eye', to: `${post.link}${post.link.includes('?') ? '&' : '?'}preview=true`, target: '_blank' }
@@ -752,6 +763,14 @@ const columns = computed<TableColumn<WpPost>[]>(() => {
           />
         </div>
       </div>
+
+      <PostEditor
+        v-model:open="editorOpen"
+        :post-id="editingId"
+        :post-type="currentType"
+        :taxonomies="taxonomies ?? []"
+        :meta-fields="metaKeys ?? []"
+      />
 
       <UModal
         v-model:open="confirmOpen"

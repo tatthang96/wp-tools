@@ -35,7 +35,11 @@ Data flow: page → Pinia Colada query (`app/queries/`) → auth store (`app/sto
   - **Use in pages:** `useQuery(pluginsQuery)` or `useQuery(() => usersListQuery(params))`.
   - **Mutations:** writes use `useMutation`. The login page and `app/composables/usePostActions.ts` (trash, restore, delete, publish) are the examples; after a write, invalidate the affected key, e.g. `postsKey()`.
   - **Post types:** the Posts page works for any post type the site exposes over REST. The collection path comes from the type's `rest_namespace` and `rest_base` via `restPath()`, never from a hard-coded `/wp/v2/posts`. Taxonomy filters are sent as `<taxonomy rest_base>=<term id>`.
-- **`app/components/RemoteSelectMenu.vue`**: a filter menu whose options are searched on the site as you type (authors, taxonomy terms). It remembers the labels of selected values.
+- **`app/components/PostEditor.vue`**: the drawer behind each row's "Edit" action.
+  - **Loading:** it loads a fresh `context=edit` copy via `postEditQuery` (`staleTime: 0`, no refetch on window focus) and resets the form every time it opens.
+  - **Saving:** it sends only changed fields (title, slug, status, sticky, excerpt, raw `content`, term IDs under each taxonomy's `rest_base`, and scalar registered meta) through `savePost()`. That first compares `modified_gmt` and throws `edit_conflict` if the post changed on the server; the UI then offers "Overwrite anyway" or "Reload".
+  - **Closing:** unsaved changes block closing. The built-in Slideover close button is a `DialogClose` that skips that check, so it's disabled (`:close="false"`) in favour of a custom button in `#actions`.
+- **`app/components/RemoteSelectMenu.vue`**: a menu whose options are searched on the site as you type (authors, taxonomy terms), single or `multiple`. It remembers the labels of selected values, and `initialItems` seeds labels for values that are already selected.
 - **`app/middleware/auth.global.ts`**: sends `/admin/**` to `/` when signed out, and `/` to `/admin` when signed in.
 - **Pages and layouts:**
   - **`/`** is the login page.

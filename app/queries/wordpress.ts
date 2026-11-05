@@ -591,3 +591,66 @@ export const postsByIdsQuery = defineQueryOptions(({ path, ids, status, fullAcce
     }
   }
 })
+
+// ---------------------------------------------------------------------------
+// Editing a single post
+// ---------------------------------------------------------------------------
+
+/** A post loaded with context=edit: raw fields plus term IDs keyed by taxonomy rest_base. */
+export interface WpPostEdit {
+  id: number
+  type: string
+  status: string
+  slug: string
+  link: string
+  modified_gmt: string
+  title: { raw: string, rendered: string }
+  content: { raw: string, rendered: string, block_version?: number }
+  excerpt: { raw: string, rendered: string }
+  sticky?: boolean
+  meta?: Record<string, unknown>
+  _embedded?: { 'wp:term'?: WpTerm[][] }
+  /** Term IDs live under the taxonomy's rest_base, e.g. post.categories = [1, 5]. */
+  [restBase: string]: unknown
+}
+
+/** Fresh copy of a post for the editor (never served from an older cache entry). */
+export const postEditQuery = defineQueryOptions(({ path, id }: { path: string, id: number | null }) => {
+  const auth = useAuthStore()
+  return {
+    key: [...postsKey(), 'edit', path, id],
+    enabled: auth.loggedIn && !!path && id !== null,
+    staleTime: 0,
+    query: ({ signal }) => auth.request<WpPostEdit>(`${path}/${id}`, {
+      query: { context: 'edit', _embed: 'wp:term' },
+      signal
+    })
+  }
+})
+
+/**
+ * Saves only the changed fields. Unless `force` is set, first checks that the post
+ * wasn't modified in WordPress after it was loaded (the REST API has no built-in
+ * conflict check), and throws a WpError with code `edit_conflict` if it was.
+ */
+export async function savePost(
+  path: string,
+  loaded: Pick<WpPostEdit, 'id' | 'modified_gmt'>,
+  changes: Record<string, unknown>,
+  force = false
+): Promise<WpPostEdit> {
+  const auth = useAuthStore()
+  if (!force) {
+    const current = await auth.request<{ modified_gmt: string }>(`${path}/${loaded.id}`, {
+      query: { context: 'edit', _fields: 'modified_gmt' }
+    })
+    if (current.modified_gmt !== loaded.modified_gmt) {
+      throw new WpError('edit_conflict', 'This post was changed in WordPress after you opened it. Saving will overwrite those changes.')
+    }
+  }
+  return auth.request<WpPostEdit>(`${path}/${loaded.id}`, {
+    method: 'POST',
+    query: { context: 'edit' },
+    body: changes
+  })
+}
