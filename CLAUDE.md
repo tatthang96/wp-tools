@@ -51,6 +51,7 @@ The REST API returns different data depending on the signed-in user's capabiliti
 - **Meta and content search (browser-side scans):**
   - **Why scan:** core REST can't filter by meta, and its `search` matches title, excerpt and content together, word by word. It also exposes only meta registered with `show_in_rest`, listing those keys in the collection's `OPTIONS` schema under `schema.properties.meta.properties` (`postMetaKeysQuery`).
   - **The scan:** `postsScanQuery` downloads only the needed fields (`_fields=id,meta` and/or `content`) for every post matching the *other* filters, 100 per page, 4 requests at once, at most `SCAN_MAX_POSTS`.
+  - **Meta types:** `postMetaKeysQuery` returns each key with its schema `type`, and the filter offers conditions per type. REST returns boolean meta as `true`/`false` on every post, so "has a value" and "is empty" would be meaningless for booleans; they get `is_true`/`is_false` instead, which also accept stored `1`/`yes`/`on`. `equals` compares numerically when both sides are numbers. If a key is missing from the schema, check the registration: since WordPress 5.5, `register_meta()` refuses keys whose `default` doesn't match their `type` (e.g. `'default' => ''` with `'type' => 'boolean'`).
   - **Matching:** the page matches with `metaMatches()` / `contentMatches()`, then loads full rows for the current page via `postsByIdsQuery` (`include` + `orderby=include`).
   - **Cache key:** the meta condition and "match case" are excluded, so editing them re-matches cached data. The content text is included, because it is also sent to the server.
   - **Content pre-filter:** the content text is sent as a quoted `search` phrase, so WordPress narrows candidates on the server; the results are a superset of real matches. `search_columns=post_content` is added when the search box is empty; WordPress 6.4+ honours it and older versions ignore it. The browser then checks the raw `post_content`, including block markup.
@@ -62,6 +63,7 @@ The REST API returns different data depending on the signed-in user's capabiliti
 
 - **Stay a static SPA.** The owner decided against a backend proxy and against adding XSS hardening; don't propose either unless asked.
 - **CORS:** requests go cross-origin to the WordPress site, which relies on WordPress's default CORS headers, including `Access-Control-Expose-Headers: X-WP-Total`.
+- **PHP notices before the JSON:** sites with `WP_DEBUG_DISPLAY` print PHP notices as HTML before the JSON body. `readJson` in `app/utils/wordpress.ts` skips that leading output; keep using it rather than `res.json()`.
 - **HTML in WordPress strings:** WordPress strings such as the site name and error messages can contain HTML or entities. Convert them with `stripTags` (DOMParser).
 
 ## Conventions

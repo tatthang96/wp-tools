@@ -1,15 +1,17 @@
 <script setup lang="ts">
-import { SCAN_MAX_POSTS, type MetaCompare, type MetaFilter } from '~/queries/wordpress'
+import { SCAN_MAX_POSTS, type MetaCompare, type MetaFilter, type WpMetaField } from '~/queries/wordpress'
 
 const props = defineProps<{
-  /** Meta keys the post type exposes to the REST API. */
-  keys: string[]
+  /** Meta fields the post type exposes to the REST API. */
+  fields: WpMetaField[]
   loadingKeys?: boolean
 }>()
 
 const model = defineModel<MetaFilter | null>({ default: null })
 
-const compareOptions: { label: string, value: MetaCompare }[] = [
+const ALL_COMPARES: { label: string, value: MetaCompare }[] = [
+  { label: 'is true', value: 'is_true' },
+  { label: 'is false', value: 'is_false' },
   { label: 'has a value', value: 'exists' },
   { label: 'is empty', value: 'empty' },
   { label: 'equals', value: 'equals' },
@@ -17,16 +19,40 @@ const compareOptions: { label: string, value: MetaCompare }[] = [
   { label: 'does not contain', value: 'not_contains' }
 ]
 
+// REST returns boolean meta as true/false on every post, so "has a value"/"is empty"
+// would be meaningless: booleans only get is true / is false.
+function comparesFor(type: string | undefined): MetaCompare[] {
+  if (type === 'boolean') return ['is_true', 'is_false']
+  if (type === 'number' || type === 'integer') return ['exists', 'empty', 'equals']
+  return ['exists', 'empty', 'equals', 'contains', 'not_contains']
+}
+
+const keyItems = computed(() => props.fields.map(f => ({ label: f.key, value: f.key, description: f.type })))
+
 const open = ref(false)
 const draft = reactive<MetaFilter>({ key: '', compare: 'exists', value: '' })
 
+const draftType = computed(() => props.fields.find(f => f.key === draft.key)?.type)
+const compareOptions = computed(() => {
+  const allowed = comparesFor(draftType.value)
+  return ALL_COMPARES.filter(o => allowed.includes(o.value))
+})
+
 // Start each edit from the applied filter (or a sensible default).
 whenever(open, () => {
-  Object.assign(draft, model.value ?? { key: props.keys[0] ?? '', compare: 'exists', value: '' })
+  const key = model.value?.key ?? props.fields[0]?.key ?? ''
+  const type = props.fields.find(f => f.key === key)?.type
+  Object.assign(draft, model.value ?? { key, compare: comparesFor(type)[0], value: '' })
+})
+
+// Switching to a key of another type: keep the condition only if it still applies.
+watch(() => draft.key, () => {
+  const allowed = comparesFor(draftType.value)
+  if (!allowed.includes(draft.compare)) draft.compare = allowed[0]!
 })
 
 function needsValue(compare: MetaCompare) {
-  return compare !== 'exists' && compare !== 'empty'
+  return compare === 'equals' || compare === 'contains' || compare === 'not_contains'
 }
 
 const canApply = computed(() => !!draft.key && (!needsValue(draft.compare) || !!draft.value.trim()))
@@ -45,7 +71,7 @@ function remove() {
 const label = computed(() => {
   const filter = model.value
   if (!filter) return 'Add meta condition'
-  const condition = compareOptions.find(o => o.value === filter.compare)?.label ?? filter.compare
+  const condition = ALL_COMPARES.find(o => o.value === filter.compare)?.label ?? filter.compare
   return needsValue(filter.compare) ? `${filter.key} ${condition} "${filter.value}"` : `${filter.key} ${condition}`
 })
 </script>
@@ -80,9 +106,10 @@ const label = computed(() => {
 
         <UFormField label="Meta key">
           <USelectMenu
-            v-if="keys.length"
+            v-if="fields.length"
             v-model="draft.key"
-            :items="keys"
+            :items="keyItems"
+            value-key="value"
             placeholder="Choose a key"
             class="w-full"
           />
@@ -108,7 +135,7 @@ const label = computed(() => {
         >
           <UInput
             v-model="draft.value"
-            placeholder="Value to match"
+            :placeholder="draftType === 'number' || draftType === 'integer' ? 'Number to match' : 'Value to match'"
             class="w-full"
           />
         </UFormField>

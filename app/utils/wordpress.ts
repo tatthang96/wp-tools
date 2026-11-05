@@ -103,9 +103,26 @@ function basicAuthHeader(username: string, password: string): string {
 }
 
 async function readJson<T>(res: Response): Promise<T | null> {
+  let text: string
   try {
-    return await res.json() as T
+    text = await res.text()
   } catch {
+    return null
+  }
+  try {
+    return JSON.parse(text) as T
+  } catch {
+    // Sites with WP_DEBUG_DISPLAY on print PHP notices as HTML before the JSON body.
+    // Skip that output and parse from where the JSON starts.
+    let start = text.search(/[[{]/)
+    while (start !== -1) {
+      try {
+        return JSON.parse(text.slice(start)) as T
+      } catch {
+        const next = text.slice(start + 1).search(/[[{]/)
+        start = next === -1 ? -1 : start + 1 + next
+      }
+    }
     return null
   }
 }

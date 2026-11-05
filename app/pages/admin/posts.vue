@@ -94,7 +94,8 @@ const sort = ref(queryOption('sort', sortOptions, 'newest'))
 const page = ref(queryId('page') ?? 1)
 
 const META_COMPARES: { value: MetaCompare }[] = [
-  { value: 'exists' }, { value: 'empty' }, { value: 'equals' }, { value: 'contains' }, { value: 'not_contains' }
+  { value: 'exists' }, { value: 'empty' }, { value: 'equals' }, { value: 'contains' }, { value: 'not_contains' },
+  { value: 'is_true' }, { value: 'is_false' }
 ]
 const metaFilter = ref<MetaFilter | null>(queryString('meta_key')
   ? {
@@ -600,7 +601,7 @@ const columns = computed<TableColumn<WpPost>[]>(() => {
           </span>
           <PostMetaFilter
             v-model="metaFilter"
-            :keys="metaKeys ?? []"
+            :fields="metaKeys ?? []"
             :loading-keys="metaKeysStatus === 'loading'"
           />
           <span

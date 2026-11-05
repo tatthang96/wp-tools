@@ -371,7 +371,13 @@ export const postsListQuery = defineQueryOptions(({ enabled = true, ...params }:
 //  - Content: the text is also sent as a quoted `search` phrase so WordPress
 //    narrows the candidates server-side; the browser then checks post_content.
 
-export type MetaCompare = 'exists' | 'empty' | 'equals' | 'contains' | 'not_contains'
+export type MetaCompare = 'exists' | 'empty' | 'equals' | 'contains' | 'not_contains' | 'is_true' | 'is_false'
+
+/** A meta key the post type exposes over REST, with its schema type (string, boolean, number, ...). */
+export interface WpMetaField {
+  key: string
+  type: string
+}
 
 export interface MetaFilter {
   key: string
@@ -424,14 +430,37 @@ function metaValueToStrings(value: unknown): string[] {
     .map(v => typeof v === 'object' ? JSON.stringify(v) : String(v))
 }
 
-/** Registered meta comes back for every post (with an empty default), so "exists" means "has a value". */
+const TRUTHY = new Set(['true', '1', 'yes', 'on'])
+
+/** Boolean meta comes back from REST as true/false, but stored values like "1" or "yes" count too. */
+function isTruthy(value: unknown): boolean {
+  if (typeof value === 'boolean') return value
+  if (typeof value === 'number') return value !== 0
+  return typeof value === 'string' && TRUTHY.has(value.trim().toLowerCase())
+}
+
+function sameValue(value: string, needle: string): boolean {
+  if (value === needle) return true
+  // Numbers compare numerically, so "19.990" equals "19.99".
+  const a = Number(value)
+  const b = Number(needle)
+  return value.trim() !== '' && needle !== '' && Number.isFinite(a) && Number.isFinite(b) && a === b
+}
+
+/**
+ * Registered meta comes back for every post (with its default), so "exists" means "has a
+ * value". Booleans are always true/false, so they use is_true / is_false instead.
+ */
 export function metaMatches(meta: Record<string, unknown> | undefined, filter: MetaFilter): boolean {
-  const values = metaValueToStrings(meta?.[filter.key])
+  const raw = meta?.[filter.key]
+  const values = metaValueToStrings(raw)
   const needle = filter.value.trim()
   switch (filter.compare) {
+    case 'is_true': return (Array.isArray(raw) ? raw : [raw]).some(isTruthy)
+    case 'is_false': return !(Array.isArray(raw) ? raw : [raw]).some(isTruthy)
     case 'exists': return values.length > 0
     case 'empty': return values.length === 0
-    case 'equals': return values.some(v => v === needle)
+    case 'equals': return values.some(v => sameValue(v, needle))
     case 'contains': return values.some(v => v.toLowerCase().includes(needle.toLowerCase()))
     case 'not_contains': return !values.some(v => v.toLowerCase().includes(needle.toLowerCase()))
   }
@@ -465,11 +494,18 @@ export const postMetaKeysQuery = defineQueryOptions((path: string) => {
     key: [...siteKey(), 'meta-keys', path],
     enabled: auth.loggedIn && !!path,
     staleTime: FIVE_MINUTES,
-    async query({ signal }): Promise<string[]> {
-      const options = await auth.request<{ schema?: { properties?: { meta?: { properties?: Record<string, unknown> } } } }>(
-        path, { method: 'OPTIONS', signal }
-      )
-      return Object.keys(options.schema?.properties?.meta?.properties ?? {}).sort()
+    async query({ signal }): Promise<WpMetaField[]> {
+      const options = await auth.request<{
+        schema?: { properties?: { meta?: { properties?: Record<string, { type?: string | string[] }> } } }
+      }>(path, { method: 'OPTIONS', signal })
+      const properties = options?.schema?.properties?.meta?.properties ?? {}
+      return Object.entries(properties)
+        .map(([key, schema]) => {
+          // Types can be a list like ["boolean", "null"]; use the first real one.
+          const types = Array.isArray(schema?.type) ? schema.type : [schema?.type]
+          return { key, type: types.find(t => t && t !== 'null') ?? 'string' }
+        })
+        .sort((a, b) => a.key.localeCompare(b.key))
     }
   }
 })
