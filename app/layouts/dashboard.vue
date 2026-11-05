@@ -16,6 +16,10 @@ const links: NavigationMenuItem[][] = [[{
   icon: 'i-lucide-file-text',
   to: '/admin/posts'
 }, {
+  label: 'Blocks',
+  icon: 'i-lucide-blocks',
+  to: '/admin/blocks'
+}, {
   label: 'Users',
   icon: 'i-lucide-users',
   to: '/admin/users'

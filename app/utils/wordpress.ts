@@ -274,3 +274,35 @@ export async function wpRequestPage<T>(session: WpSession, path: string, options
   const total = Number(res.headers.get('X-WP-Total') ?? data.length)
   return { data, total: Number.isFinite(total) ? total : data.length }
 }
+
+// --- Blocks --------------------------------------------------------------------
+
+const BLOCK_CATEGORY_LABELS: Record<string, string> = {
+  text: 'Text',
+  media: 'Media',
+  design: 'Design',
+  widgets: 'Widgets',
+  theme: 'Theme',
+  embed: 'Embeds',
+  reusable: 'Patterns'
+}
+
+/** Core category labels; custom categories (registered in JavaScript) fall back to their slug. */
+export function blockCategoryLabel(category: string | null | undefined): string {
+  if (!category) return 'Uncategorized'
+  return BLOCK_CATEGORY_LABELS[category] ?? category.replace(/[-_]+/g, ' ').replace(/^\w/, c => c.toUpperCase())
+}
+
+/** The namespace part of a block name, e.g. `core` for `core/paragraph`. */
+export function blockProvider(name: string): string {
+  return name.split('/')[0] ?? name
+}
+
+/**
+ * Text that appears in `post_content` wherever the block is used. Block comments drop the
+ * `core/` namespace (`<!-- wp:paragraph -->`), and the name is always followed by a space,
+ * which keeps `wp:query` from also matching `wp:query-title`.
+ */
+export function blockCommentText(name: string): string {
+  return `wp:${name.startsWith('core/') ? name.slice(5) : name} `
+}

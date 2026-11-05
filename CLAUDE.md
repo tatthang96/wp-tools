@@ -66,6 +66,11 @@ The REST API returns different data depending on the signed-in user's capabiliti
   - **Content pre-filter:** the content text is sent as a quoted `search` phrase, so WordPress narrows candidates on the server; the results are a superset of real matches. `search_columns=post_content` is added when the search box is empty; WordPress 6.4+ honours it and older versions ignore it. The browser then checks the raw `post_content`, including block markup.
   - **Cancelling:** queries pass Pinia Colada's `signal` through to `fetch`, so a changed filter cancels an in-flight scan.
   - **Decision:** the owner chose browser scans over a companion WordPress plugin, which would be needed for private or unregistered meta like `_price`.
+- **Blocks (`/admin/blocks`, `/admin/blocks/patterns`, tabs in `BlocksTabs.vue`):**
+  - **Block types:** `blockTypesQuery` reads `/wp/v2/block-types` (needs `edit_posts`; not paginated; only blocks registered in PHP, not JS-only ones). Filtering, search and pagination happen in the browser.
+  - **Hiding blocks:** core REST can't disable a block site-wide. What it can do is hide blocks from the *signed-in user's* inserter via the `persisted_preferences` user meta (WP 6.1+) on `/wp/v2/users/me`, at `core.hiddenBlockTypes` (WP 6.5+; older versions used `core/edit-post`). `setBlockTypesHidden()` re-reads the preferences before writing so other editor settings survive, and stamps `_modified` so the editor prefers the server copy over its localStorage cache.
+  - **Finding usage:** "Find posts using it" opens the Posts page with a content search for `blockCommentText(name)`: `wp:<name>` without the `core/` prefix, plus a trailing space so `wp:query` doesn't match `wp:query-title`.
+  - **Patterns:** synced patterns are `wp_block` posts at `/wp/v2/blocks` (`PATTERN_POST_TYPE`), edited with the same `PostEditor`. WordPress moves `wp_pattern_sync_status` out of `meta` to the top level of responses (and only fills it when `meta` is in `_fields`), so it isn't offered as an editable meta field. Filtering by sync status has to read every pattern, because it's a meta value.
 - **What core REST can't do:** there's no endpoint for listing roles, listing multisite sites, or checking plugin updates.
 
 ### Constraints

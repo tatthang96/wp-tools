@@ -654,3 +654,182 @@ export async function savePost(
     body: changes
   })
 }
+
+// --- Blocks --------------------------------------------------------------------
+
+/** A block type registered on the server (`/wp/v2/block-types`). Needs the edit_posts capability. */
+export interface WpBlockType {
+  name: string
+  title: string
+  description: string
+  category: string | null
+  keywords: string[]
+  parent: string[] | null
+  ancestor: string[] | null
+  is_dynamic: boolean
+  api_version: number
+  textdomain: string | null
+  supports: Record<string, unknown> | null
+  styles: { name: string, label: string, isDefault?: boolean }[]
+  variations: { name: string, title: string, description?: string }[]
+  attributes: Record<string, { type?: string | string[], default?: unknown, enum?: unknown[] }> | null
+}
+
+export function blocksKey() {
+  return [...siteKey(), 'blocks'] as const
+}
+
+const BLOCK_TYPE_FIELDS = [
+  'name', 'title', 'description', 'category', 'keywords', 'parent', 'ancestor', 'is_dynamic',
+  'api_version', 'textdomain', 'supports', 'styles', 'variations', 'attributes'
+].join(',')
+
+/** Every block type registered in PHP (this endpoint isn't paginated). Blocks registered only in JavaScript aren't listed. */
+export const blockTypesQuery = defineQueryOptions(() => {
+  const auth = useAuthStore()
+  return {
+    key: [...blocksKey(), 'types'],
+    enabled: auth.loggedIn,
+    staleTime: FIVE_MINUTES,
+    query: ({ signal }) => auth.request<WpBlockType[]>('/wp/v2/block-types', { query: { _fields: BLOCK_TYPE_FIELDS }, signal })
+  }
+})
+
+/**
+ * The block editor's per-user preferences (`persisted_preferences` user meta, WordPress 6.1+).
+ * Since 6.5 the list of blocks hidden from the inserter lives at `core.hiddenBlockTypes`;
+ * older versions kept it under `core/edit-post`.
+ */
+export interface EditorPreferences {
+  '_modified'?: string
+  'core'?: { hiddenBlockTypes?: string[], [key: string]: unknown }
+  'core/edit-post'?: { hiddenBlockTypes?: string[], [key: string]: unknown }
+  [key: string]: unknown
+}
+
+/** `null` when the site doesn't expose the preferences (WordPress older than 6.1). */
+async function fetchEditorPreferences(signal?: AbortSignal): Promise<EditorPreferences | null> {
+  const auth = useAuthStore()
+  const me = await auth.request<{ meta?: Record<string, unknown> | unknown[] }>('/wp/v2/users/me', {
+    query: { context: 'edit', _fields: 'meta' },
+    signal
+  })
+  const meta = me.meta
+  if (!meta || Array.isArray(meta) || !('persisted_preferences' in meta)) return null
+  const prefs = meta.persisted_preferences
+  // An empty PHP array comes back as `[]`.
+  return prefs && typeof prefs === 'object' && !Array.isArray(prefs) ? prefs as EditorPreferences : {}
+}
+
+export function hiddenBlockTypes(prefs: EditorPreferences | null | undefined): string[] {
+  return prefs?.core?.hiddenBlockTypes ?? prefs?.['core/edit-post']?.hiddenBlockTypes ?? []
+}
+
+export const editorPreferencesQuery = defineQueryOptions(() => {
+  const auth = useAuthStore()
+  return {
+    key: [...blocksKey(), 'preferences'],
+    enabled: auth.loggedIn,
+    staleTime: 0,
+    query: ({ signal }) => fetchEditorPreferences(signal)
+  }
+})
+
+/**
+ * Shows or hides block types in the signed-in user's block editor inserter. Re-reads the
+ * preferences first so other editor settings changed in the meantime aren't overwritten,
+ * and stamps `_modified` so the editor prefers this copy over its localStorage cache.
+ */
+export async function setBlockTypesHidden(names: string[], hidden: boolean): Promise<EditorPreferences> {
+  const auth = useAuthStore()
+  const current = await fetchEditorPreferences()
+  if (!current) throw new WpError('preferences_unavailable', 'This site doesn\'t expose block editor preferences (WordPress 6.1 or later is required).')
+
+  const list = new Set(hiddenBlockTypes(current))
+  for (const name of names) {
+    if (hidden) list.add(name)
+    else list.delete(name)
+  }
+  const hiddenBlocks = [...list]
+  const next: EditorPreferences = {
+    ...current,
+    core: { ...current.core, hiddenBlockTypes: hiddenBlocks },
+    _modified: new Date().toISOString()
+  }
+  // Keep a pre-6.5 copy consistent; newer editors migrate it into `core` on load.
+  if (current['core/edit-post']?.hiddenBlockTypes) {
+    next['core/edit-post'] = { ...current['core/edit-post'], hiddenBlockTypes: hiddenBlocks }
+  }
+
+  const me = await auth.request<{ meta?: { persisted_preferences?: EditorPreferences } }>('/wp/v2/users/me', {
+    method: 'POST',
+    query: { context: 'edit', _fields: 'meta' },
+    body: { meta: { persisted_preferences: next } }
+  })
+  return me.meta?.persisted_preferences ?? next
+}
+
+/** Synced patterns (formerly "reusable blocks") are posts of the `wp_block` type. */
+export const PATTERN_POST_TYPE: WpPostType = {
+  slug: 'wp_block',
+  name: 'Patterns',
+  hierarchical: false,
+  taxonomies: ['wp_pattern_category'],
+  rest_base: 'blocks',
+  rest_namespace: 'wp/v2'
+}
+
+export interface WpPattern {
+  id: number
+  title: { raw?: string, rendered?: string }
+  status: string
+  modified: string
+  /** `''` = synced, `'unsynced'` = inserted as a copy. */
+  wp_pattern_sync_status?: string
+  content?: { raw?: string }
+}
+
+export interface PatternsListParams {
+  search: string
+  status: 'all' | 'publish' | 'draft' | 'trash'
+  sync: 'all' | 'synced' | 'unsynced'
+  page: number
+  perPage: number
+}
+
+/** Lives under `postsKey()` so saves from the post editor and post actions refresh it. */
+export const patternsListQuery = defineQueryOptions((params: PatternsListParams) => {
+  const auth = useAuthStore()
+  return {
+    key: [...postsKey(), 'patterns', params],
+    enabled: auth.loggedIn,
+    placeholderData: (previous: { patterns: WpPattern[], total: number } | undefined) => previous,
+    query: async ({ signal }) => {
+      const query: Record<string, string | number | undefined> = {
+        context: 'edit',
+        page: params.page,
+        per_page: params.perPage,
+        orderby: params.search ? 'relevance' : 'title',
+        order: params.search ? undefined : 'asc',
+        search: params.search || undefined,
+        status: params.status === 'all' ? 'publish,draft,pending,private,future' : params.status,
+        // `meta` is needed: WordPress copies the sync status out of it.
+        _fields: 'id,title,status,modified,meta,wp_pattern_sync_status,content'
+      }
+      // The sync status is a meta value, so filtering by it means reading every pattern.
+      if (params.sync === 'all') {
+        const { data, total } = await auth.requestPage<WpPattern>('/wp/v2/blocks', { query, signal })
+        return { patterns: data, total }
+      }
+      const all: WpPattern[] = []
+      for (let page = 1; ; page++) {
+        const { data, total } = await auth.requestPage<WpPattern>('/wp/v2/blocks', { query: { ...query, page, per_page: 100 }, signal })
+        all.push(...data)
+        if (all.length >= total || !data.length || page >= 50) break
+      }
+      const wanted = all.filter(p => (p.wp_pattern_sync_status === 'unsynced') === (params.sync === 'unsynced'))
+      const start = (params.page - 1) * params.perPage
+      return { patterns: wanted.slice(start, start + params.perPage), total: wanted.length }
+    }
+  }
+})

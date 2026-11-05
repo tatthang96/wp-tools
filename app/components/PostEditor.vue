@@ -437,7 +437,7 @@ function discard() {
         <div class="flex flex-wrap items-center justify-between gap-2">
           <div class="flex gap-1">
             <UButton
-              v-if="post"
+              v-if="post && postType?.slug !== 'wp_block'"
               :to="post.link"
               target="_blank"
               icon="i-lucide-external-link"
