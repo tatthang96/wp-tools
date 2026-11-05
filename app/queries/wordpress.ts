@@ -192,6 +192,8 @@ export type PostsSort = 'newest' | 'oldest' | 'modified' | 'title'
 export type PostsDateFilter = 'any' | '7d' | '30d' | '12m'
 
 export interface PostsListParams {
+  /** Set to false to pause the query (e.g. while a meta search is active). Not part of the key. */
+  enabled?: boolean
   /** REST collection path, e.g. /wp/v2/posts — from restPath(postType). */
   path: string
   page: number
@@ -297,41 +299,259 @@ export function fetchAuthors(search: string) {
   })
 }
 
+type PostsFilters = Omit<PostsListParams, 'page' | 'perPage' | 'enabled'>
+type RequestQuery = Record<string, string | number | boolean | undefined>
+
+/** REST query parameters for the list filters (everything except paging and status). */
+function postsFilterQuery(filters: PostsFilters): RequestQuery {
+  const days = filters.date === 'any' ? 0 : DATE_RANGE_DAYS[filters.date]
+  return {
+    search: filters.search || undefined,
+    author: filters.author ?? undefined,
+    after: days ? new Date(Date.now() - days * 86_400_000).toISOString() : undefined,
+    ...POSTS_SORT[filters.sort],
+    ...filters.terms
+  }
+}
+
+/**
+ * Requests a page of posts with edit access (all statuses, raw fields). Roles without
+ * edit_posts for the type get published posts only; pass `limited` to skip the first try.
+ */
+async function requestPosts<T>(
+  path: string,
+  query: RequestQuery,
+  status: PostStatusFilter,
+  options: { limited?: boolean, signal?: AbortSignal } = {}
+): Promise<WpPage<T> & { fullAccess: boolean }> {
+  const auth = useAuthStore()
+  if (!options.limited) {
+    try {
+      const page = await auth.requestPage<T>(path, {
+        query: { ...query, status: status === 'all' ? ALL_STATUSES : status, context: 'edit' },
+        signal: options.signal
+      })
+      return { ...page, fullAccess: true }
+    } catch (error) {
+      if (!isLimitedAccessError(error)) throw error
+    }
+  }
+  const page = await auth.requestPage<T>(path, { query, signal: options.signal })
+  return { ...page, fullAccess: false }
+}
+
 /** One page of posts of any type, with status, author, term, date, search and sort filters. */
-export const postsListQuery = defineQueryOptions((params: PostsListParams) => {
+export const postsListQuery = defineQueryOptions(({ enabled = true, ...params }: PostsListParams) => {
   const auth = useAuthStore()
   return {
     key: [...postsKey(), { ...params, terms: { ...params.terms } }],
-    enabled: auth.loggedIn && !!params.path,
+    enabled: enabled && auth.loggedIn && !!params.path,
     placeholderData: (previous: PostsList | undefined) => previous,
-    async query(): Promise<PostsList> {
-      const days = params.date === 'any' ? 0 : DATE_RANGE_DAYS[params.date]
-      const base = {
+    async query({ signal }): Promise<PostsList> {
+      const { data, total, fullAccess } = await requestPosts<WpPost>(params.path, {
+        ...postsFilterQuery(params),
         page: params.page,
         per_page: params.perPage,
-        search: params.search || undefined,
-        author: params.author ?? undefined,
-        after: days ? new Date(Date.now() - days * 86_400_000).toISOString() : undefined,
-        ...POSTS_SORT[params.sort],
-        ...params.terms,
         _embed: 'author,wp:term'
+      }, params.status, { signal })
+      return { posts: data, total, fullAccess }
+    }
+  }
+})
+
+// ---------------------------------------------------------------------------
+// Meta & content search (scanned in the browser)
+// ---------------------------------------------------------------------------
+// The REST API can't filter by meta, and its `search` matches title, excerpt and
+// content together (word by word). So for these searches we download only the
+// fields we need for every post matching the other filters, match in the browser,
+// then load full rows for the matching IDs one page at a time.
+//  - Meta: only keys registered with show_in_rest are visible. The meta condition
+//    isn't part of the scan key, so editing it re-matches the cached scan.
+//  - Content: the text is also sent as a quoted `search` phrase so WordPress
+//    narrows the candidates server-side; the browser then checks post_content.
+
+export type MetaCompare = 'exists' | 'empty' | 'equals' | 'contains' | 'not_contains'
+
+export interface MetaFilter {
+  key: string
+  compare: MetaCompare
+  value: string
+}
+
+export interface ContentFilter {
+  text: string
+  matchCase: boolean
+}
+
+export interface PostsScanParams {
+  filters: PostsFilters
+  /** Download meta for matching in the browser. */
+  meta: boolean
+  /** Content text to search for (server pre-filter + browser check), or null. */
+  content: string | null
+}
+
+export interface WpPostScanItem {
+  id: number
+  meta?: Record<string, unknown>
+  content?: { raw?: string, rendered?: string }
+}
+
+export interface PostsScanResult {
+  /** Scanned posts with only the requested fields, in the server's sort order. */
+  posts: WpPostScanItem[]
+  scanned: number
+  /** Posts matching the other filters (may be more than were scanned). */
+  total: number
+  truncated: boolean
+  fullAccess: boolean
+}
+
+export interface ScanProgress {
+  scanned: number
+  total: number
+}
+
+const SCAN_PAGE_SIZE = 100
+const SCAN_CONCURRENCY = 4
+export const SCAN_MAX_POSTS = 5000
+
+function metaValueToStrings(value: unknown): string[] {
+  const values = Array.isArray(value) ? value : [value]
+  return values
+    .filter(v => v !== null && v !== undefined && v !== '')
+    .map(v => typeof v === 'object' ? JSON.stringify(v) : String(v))
+}
+
+/** Registered meta comes back for every post (with an empty default), so "exists" means "has a value". */
+export function metaMatches(meta: Record<string, unknown> | undefined, filter: MetaFilter): boolean {
+  const values = metaValueToStrings(meta?.[filter.key])
+  const needle = filter.value.trim()
+  switch (filter.compare) {
+    case 'exists': return values.length > 0
+    case 'empty': return values.length === 0
+    case 'equals': return values.some(v => v === needle)
+    case 'contains': return values.some(v => v.toLowerCase().includes(needle.toLowerCase()))
+    case 'not_contains': return !values.some(v => v.toLowerCase().includes(needle.toLowerCase()))
+  }
+}
+
+/**
+ * Checks the raw post_content (block markup and shortcodes included). Roles without
+ * edit access only get rendered HTML, which is matched as plain text instead.
+ */
+export function contentMatches(content: WpPostScanItem['content'], filter: ContentFilter): boolean {
+  const haystack = content?.raw ?? stripTags(content?.rendered ?? '')
+  return filter.matchCase
+    ? haystack.includes(filter.text)
+    : haystack.toLowerCase().includes(filter.text.toLowerCase())
+}
+
+/**
+ * The `search` value for a scan. Quoting makes WordPress treat the content text as one
+ * phrase (LIKE on title, excerpt and content), so results are a superset of real
+ * content matches. Text containing `"` can't be quoted, so it isn't pre-filtered.
+ */
+function scanSearch(filters: PostsFilters, content: string | null): string | undefined {
+  const phrase = content && !content.includes('"') ? `"${content}"` : ''
+  return [filters.search, phrase].filter(Boolean).join(' ') || undefined
+}
+
+/** Meta keys the post type exposes to the REST API, read from the endpoint's schema. */
+export const postMetaKeysQuery = defineQueryOptions((path: string) => {
+  const auth = useAuthStore()
+  return {
+    key: [...siteKey(), 'meta-keys', path],
+    enabled: auth.loggedIn && !!path,
+    staleTime: FIVE_MINUTES,
+    async query({ signal }): Promise<string[]> {
+      const options = await auth.request<{ schema?: { properties?: { meta?: { properties?: Record<string, unknown> } } } }>(
+        path, { method: 'OPTIONS', signal }
+      )
+      return Object.keys(options.schema?.properties?.meta?.properties ?? {}).sort()
+    }
+  }
+})
+
+/** Scans the requested fields of every post matching the filters (up to SCAN_MAX_POSTS). */
+export const postsScanQuery = defineQueryOptions(({ params, onProgress }: {
+  params: PostsScanParams | null
+  onProgress?: (progress: ScanProgress) => void
+}) => {
+  const auth = useAuthStore()
+  return {
+    key: [...postsKey(), 'scan', params ? { ...params, filters: { ...params.filters, terms: { ...params.filters.terms } } } : null],
+    enabled: auth.loggedIn && !!params?.filters.path && (params.meta || !!params.content),
+    staleTime: 60_000,
+    async query({ signal }): Promise<PostsScanResult> {
+      const { filters, meta, content } = params!
+      const fields = ['id', meta && 'meta', content && 'content'].filter(Boolean).join(',')
+      const query: RequestQuery = {
+        ...postsFilterQuery(filters),
+        search: scanSearch(filters, content),
+        // WordPress 6.4+ can limit the search to post_content; older versions ignore it.
+        // Only safe when the search box is empty (it should keep searching all columns).
+        search_columns: content && !filters.search ? 'post_content' : undefined,
+        per_page: SCAN_PAGE_SIZE,
+        _fields: fields
       }
 
-      try {
-        const { data, total } = await auth.requestPage<WpPost>(params.path, {
-          query: {
-            ...base,
-            status: params.status === 'all' ? ALL_STATUSES : params.status,
-            context: 'edit'
-          }
-        })
-        return { posts: data, total, fullAccess: true }
-      } catch (error) {
-        if (!isLimitedAccessError(error)) throw error
-        // Roles without edit_posts for this type can only read published content.
-        const { data, total } = await auth.requestPage<WpPost>(params.path, { query: base })
-        return { posts: data, total, fullAccess: false }
+      const first = await requestPosts<WpPostScanItem>(filters.path, { ...query, page: 1 }, filters.status, { signal })
+      const limit = Math.min(first.total, SCAN_MAX_POSTS)
+      const pageCount = Math.ceil(limit / SCAN_PAGE_SIZE)
+      const pages: WpPostScanItem[][] = [first.data]
+      let scanned = first.data.length
+      onProgress?.({ scanned, total: limit })
+
+      let nextPage = 2
+      async function worker() {
+        while (nextPage <= pageCount) {
+          const page = nextPage++
+          const result = await requestPosts<WpPostScanItem>(filters.path, { ...query, page }, filters.status, {
+            limited: !first.fullAccess,
+            signal
+          })
+          pages[page - 1] = result.data
+          scanned += result.data.length
+          onProgress?.({ scanned, total: limit })
+        }
       }
+      await Promise.all(Array.from({ length: Math.min(SCAN_CONCURRENCY, pageCount - 1) }, worker))
+
+      return {
+        posts: pages.flat(),
+        scanned,
+        total: first.total,
+        truncated: first.total > SCAN_MAX_POSTS,
+        fullAccess: first.fullAccess
+      }
+    }
+  }
+})
+
+/** Full table rows for specific post IDs, kept in the given order. */
+export const postsByIdsQuery = defineQueryOptions(({ path, ids, status, fullAccess, enabled = true }: {
+  path: string
+  ids: number[]
+  status: PostStatusFilter
+  fullAccess: boolean
+  enabled?: boolean
+}) => {
+  const auth = useAuthStore()
+  return {
+    key: [...postsKey(), 'by-ids', path, status, fullAccess, [...ids]],
+    enabled: enabled && auth.loggedIn && !!path,
+    placeholderData: (previous: WpPost[] | undefined) => previous,
+    async query({ signal }): Promise<WpPost[]> {
+      if (!ids.length) return []
+      const { data } = await requestPosts<WpPost>(path, {
+        include: ids.join(','),
+        orderby: 'include',
+        per_page: ids.length,
+        _embed: 'author,wp:term'
+      }, status, { limited: !fullAccess, signal })
+      return data
     }
   }
 })

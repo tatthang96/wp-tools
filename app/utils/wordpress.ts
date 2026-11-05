@@ -207,9 +207,12 @@ export async function connectWordPress(credentials: WpCredentials): Promise<WpSe
 }
 
 export interface WpRequestOptions {
-  method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
+  /** OPTIONS returns the endpoint's schema (e.g. which meta keys a post type exposes). */
+  method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'OPTIONS'
   query?: Record<string, string | number | boolean | undefined>
   body?: unknown
+  /** Cancels the request, e.g. the signal Pinia Colada passes to query functions. */
+  signal?: AbortSignal
 }
 
 async function wpSend(session: WpSession, path: string, options: WpRequestOptions): Promise<Response> {
@@ -222,9 +225,12 @@ async function wpSend(session: WpSession, path: string, options: WpRequestOption
         Authorization: basicAuthHeader(session.username, session.appPassword),
         ...(options.body !== undefined ? { 'Content-Type': 'application/json' } : {})
       },
-      body: options.body !== undefined ? JSON.stringify(options.body) : undefined
+      body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+      signal: options.signal
     })
-  } catch {
+  } catch (error) {
+    // Let cancellations propagate as-is so callers (and Pinia Colada) can ignore them.
+    if (options.signal?.aborted) throw error
     throw new WpError('unreachable', UNREACHABLE_MESSAGE)
   }
 

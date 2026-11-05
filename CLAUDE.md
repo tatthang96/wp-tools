@@ -48,6 +48,14 @@ The REST API returns different data depending on the signed-in user's capabiliti
 - **`/wp/v2/plugins`:** needs `activate_plugins`. For other roles it returns 403.
 - **`/wp/v2/users` admin-only parameters:** `context=edit` (email, roles, registered date), `orderby=registered_date` and `roles=` need `list_users`. Without that capability, WordPress returns `rest_forbidden_context`, `rest_forbidden_orderby` or `rest_user_cannot_view`. The queries catch these codes, retry with public fields only, and set `fullAccess: false` or `limited: true`. Without `list_users`, WordPress only lists authors with published posts.
 - **Posts of any type:** `context=edit` and non-public statuses need `edit_posts` for that type. Without it, WordPress returns `rest_forbidden_context` or `rest_forbidden_status`, and the posts query falls back to published posts only (`fullAccess: false`); the page then hides selection and actions. There is no "untrash" endpoint: restoring means setting `status: 'draft'`. Even `title.raw` can contain HTML entities, so always pass titles through `stripTags`.
+- **Meta and content search (browser-side scans):**
+  - **Why scan:** core REST can't filter by meta, and its `search` matches title, excerpt and content together, word by word. It also exposes only meta registered with `show_in_rest`, listing those keys in the collection's `OPTIONS` schema under `schema.properties.meta.properties` (`postMetaKeysQuery`).
+  - **The scan:** `postsScanQuery` downloads only the needed fields (`_fields=id,meta` and/or `content`) for every post matching the *other* filters, 100 per page, 4 requests at once, at most `SCAN_MAX_POSTS`.
+  - **Matching:** the page matches with `metaMatches()` / `contentMatches()`, then loads full rows for the current page via `postsByIdsQuery` (`include` + `orderby=include`).
+  - **Cache key:** the meta condition and "match case" are excluded, so editing them re-matches cached data. The content text is included, because it is also sent to the server.
+  - **Content pre-filter:** the content text is sent as a quoted `search` phrase, so WordPress narrows candidates on the server; the results are a superset of real matches. `search_columns=post_content` is added when the search box is empty; WordPress 6.4+ honours it and older versions ignore it. The browser then checks the raw `post_content`, including block markup.
+  - **Cancelling:** queries pass Pinia Colada's `signal` through to `fetch`, so a changed filter cancels an in-flight scan.
+  - **Decision:** the owner chose browser scans over a companion WordPress plugin, which would be needed for private or unregistered meta like `_price`.
 - **What core REST can't do:** there's no endpoint for listing roles, listing multisite sites, or checking plugin updates.
 
 ### Constraints

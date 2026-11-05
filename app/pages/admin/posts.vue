@@ -4,16 +4,26 @@ import { useQuery } from '@pinia/colada'
 import {
   fetchAuthors,
   fetchTerms,
+  contentMatches,
+  metaMatches,
+  postsScanQuery,
+  postMetaKeysQuery,
+  postsByIdsQuery,
   postsListQuery,
   postTypesQuery,
   restPath,
   siteKey,
   taxonomiesQuery,
+  type MetaCompare,
+  type MetaFilter,
+  type ContentFilter,
+  type ScanProgress,
   type PostsDateFilter,
   type PostsSort,
   type PostStatusFilter,
   type WpPost,
-  type WpTaxonomy
+  type WpTaxonomy,
+  SCAN_MAX_POSTS
 } from '~/queries/wordpress'
 import type { RemoteSelectItem } from '~/components/RemoteSelectMenu.vue'
 
@@ -83,6 +93,20 @@ const date = ref(queryOption('date', dateOptions, 'any'))
 const sort = ref(queryOption('sort', sortOptions, 'newest'))
 const page = ref(queryId('page') ?? 1)
 
+const META_COMPARES: { value: MetaCompare }[] = [
+  { value: 'exists' }, { value: 'empty' }, { value: 'equals' }, { value: 'contains' }, { value: 'not_contains' }
+]
+const metaFilter = ref<MetaFilter | null>(queryString('meta_key')
+  ? {
+      key: queryString('meta_key')!,
+      compare: queryOption('meta_compare', META_COMPARES, 'exists'),
+      value: queryString('meta_value') ?? ''
+    }
+  : null)
+const contentFilter = ref<ContentFilter | null>(queryString('content_q')
+  ? { text: queryString('content_q')!, matchCase: queryString('content_case') === '1' }
+  : null)
+
 const debouncedSearch = refDebounced(computed(() => search.value.trim()), 300)
 
 const termFilters = computed(() => Object.fromEntries(
@@ -91,7 +115,7 @@ const termFilters = computed(() => Object.fromEntries(
 
 const hasFilters = computed(() =>
   !!debouncedSearch.value || status.value !== 'all' || author.value !== undefined
-  || Object.keys(termFilters.value).length > 0 || date.value !== 'any'
+  || Object.keys(termFilters.value).length > 0 || date.value !== 'any' || !!metaFilter.value || !!contentFilter.value
 )
 
 function clearFilters() {
@@ -100,20 +124,23 @@ function clearFilters() {
   author.value = undefined
   terms.value = {}
   date.value = 'any'
+  metaFilter.value = null
+  contentFilter.value = null
 }
 
-// Term filters belong to the previous post type's taxonomies.
+// Term and meta filters belong to the previous post type.
 watch(type, () => {
   terms.value = {}
+  metaFilter.value = null
 }, { flush: 'sync' })
 
 // New filters start from page 1. `sync` resets the page before the query key is
 // re-evaluated, so we don't fetch the old page number with the new filters.
-watch([type, debouncedSearch, status, author, termFilters, date, sort], () => {
+watch([type, debouncedSearch, status, author, termFilters, date, sort, metaFilter, contentFilter], () => {
   page.value = 1
 }, { flush: 'sync' })
 
-watch([type, status, debouncedSearch, author, termFilters, date, sort, page], () => {
+watch([type, status, debouncedSearch, author, termFilters, date, sort, metaFilter, contentFilter, page], () => {
   router.replace({
     query: {
       type: type.value !== 'post' ? type.value : undefined,
@@ -123,6 +150,11 @@ watch([type, status, debouncedSearch, author, termFilters, date, sort, page], ()
       ...Object.fromEntries(Object.entries(termFilters.value).map(([base, id]) => [`tax_${base}`, id])),
       date: date.value !== 'any' ? date.value : undefined,
       sort: sort.value !== 'newest' ? sort.value : undefined,
+      meta_key: metaFilter.value?.key,
+      meta_compare: metaFilter.value?.compare,
+      meta_value: metaFilter.value?.value || undefined,
+      content_q: contentFilter.value?.text,
+      content_case: contentFilter.value?.matchCase ? '1' : undefined,
       page: page.value > 1 ? page.value : undefined
     }
   })
@@ -141,10 +173,9 @@ watchImmediate(postTypes, (types) => {
 
 const { data: taxonomies } = useQuery(() => taxonomiesQuery(type.value))
 
-const { data, error, asyncStatus, refetch } = useQuery(() => postsListQuery({
-  path: currentType.value ? restPath(currentType.value) : '',
-  page: page.value,
-  perPage: PER_PAGE,
+const path = computed(() => currentType.value ? restPath(currentType.value) : '')
+const filters = computed(() => ({
+  path: path.value,
   search: debouncedSearch.value,
   status: status.value,
   author: author.value ?? null,
@@ -152,15 +183,77 @@ const { data, error, asyncStatus, refetch } = useQuery(() => postsListQuery({
   date: date.value,
   sort: sort.value
 }))
+const metaActive = computed(() => !!metaFilter.value)
+const contentActive = computed(() => !!contentFilter.value)
+/** Meta and content searches scan posts in the browser instead of the regular list. */
+const scanActive = computed(() => metaActive.value || contentActive.value)
 
-const posts = computed(() => error.value ? [] : data.value?.posts ?? [])
-const total = computed(() => error.value ? 0 : data.value?.total ?? 0)
-const fullAccess = computed(() => data.value?.fullAccess ?? true)
-const loading = computed(() => asyncStatus.value === 'loading')
+// Regular list: server-side filtering and paging. Paused while a meta search runs.
+const list = useQuery(() => postsListQuery({
+  ...filters.value,
+  page: page.value,
+  perPage: PER_PAGE,
+  enabled: !scanActive.value
+}))
+
+// Meta / content search: scan the needed fields of every post matching the other
+// filters, match here, then load full rows for the current page of matching IDs.
+const { data: metaKeys, asyncStatus: metaKeysStatus } = useQuery(() => postMetaKeysQuery(path.value))
+
+const scanProgress = ref<ScanProgress | null>(null)
+const scan = useQuery(() => postsScanQuery({
+  // The meta condition and "match case" aren't in the params: changing them re-matches the cached scan.
+  params: scanActive.value
+    ? { filters: filters.value, meta: metaActive.value, content: contentFilter.value?.text ?? null }
+    : null,
+  onProgress: (progress) => {
+    scanProgress.value = progress
+  }
+}))
+const scanning = computed(() => scanActive.value && scan.asyncStatus.value === 'loading')
+
+const matchingIds = computed(() => {
+  const meta = metaFilter.value
+  const content = contentFilter.value
+  if (!scan.data.value || (!meta && !content)) return []
+  return scan.data.value.posts
+    .filter(post => (!meta || metaMatches(post.meta, meta)) && (!content || contentMatches(post.content, content)))
+    .map(post => post.id)
+})
+const pageIds = computed(() => matchingIds.value.slice((page.value - 1) * PER_PAGE, page.value * PER_PAGE))
+const byIds = useQuery(() => postsByIdsQuery({
+  path: path.value,
+  ids: pageIds.value,
+  status: status.value,
+  fullAccess: scan.data.value?.fullAccess ?? true,
+  enabled: scanActive.value && !!scan.data.value
+}))
+
+const error = computed(() => scanActive.value ? scan.error.value ?? byIds.error.value : list.error.value)
+const posts = computed<WpPost[]>(() => {
+  if (error.value) return []
+  if (scanActive.value) return scan.data.value ? byIds.data.value ?? [] : []
+  return list.data.value?.posts ?? []
+})
+const total = computed(() => {
+  if (error.value) return 0
+  return scanActive.value ? matchingIds.value.length : list.data.value?.total ?? 0
+})
+const fullAccess = computed(() => (scanActive.value ? scan.data.value?.fullAccess : list.data.value?.fullAccess) ?? true)
+const loading = computed(() => scanActive.value
+  ? scanning.value || byIds.asyncStatus.value === 'loading'
+  : list.asyncStatus.value === 'loading')
 const errorMessage = computed(() => {
   if (!error.value) return null
   return error.value instanceof WpError ? error.value.message : 'Couldn\'t load posts.'
 })
+
+function refetch() {
+  if (scanActive.value) scan.refetch()
+  else list.refetch()
+}
+
+const number = new Intl.NumberFormat()
 
 const typeName = computed(() => currentType.value?.name ?? 'Posts')
 useHead({ title: typeName })
@@ -169,7 +262,10 @@ const rangeLabel = computed(() => {
   if (!total.value) return ''
   const from = (page.value - 1) * PER_PAGE + 1
   const to = Math.min(page.value * PER_PAGE, total.value)
-  return `Showing ${from}–${to} of ${new Intl.NumberFormat().format(total.value)}`
+  if (scanActive.value && scan.data.value) {
+    return `Showing ${from}–${to} of ${number.format(total.value)} matches · ${number.format(scan.data.value.scanned)} posts scanned`
+  }
+  return `Showing ${from}–${to} of ${number.format(total.value)}`
 })
 
 // --- Filter menus --------------------------------------------------------------
@@ -491,6 +587,49 @@ const columns = computed<TableColumn<WpPost>[]>(() => {
           />
         </template>
       </UDashboardToolbar>
+
+      <!-- Meta search is a separate section: it scans posts in the browser instead of filtering on the server. -->
+      <UDashboardToolbar>
+        <template #left>
+          <span class="flex items-center gap-1.5 text-sm font-medium text-muted">
+            <UIcon
+              name="i-lucide-database"
+              class="size-4"
+            />
+            Meta search
+          </span>
+          <PostMetaFilter
+            v-model="metaFilter"
+            :keys="metaKeys ?? []"
+            :loading-keys="metaKeysStatus === 'loading'"
+          />
+          <span
+            v-if="!metaFilter"
+            class="hidden text-xs text-dimmed md:inline"
+          >
+            Find posts by a registered meta field. Combines with the filters above.
+          </span>
+        </template>
+      </UDashboardToolbar>
+
+      <UDashboardToolbar>
+        <template #left>
+          <span class="flex items-center gap-1.5 text-sm font-medium text-muted">
+            <UIcon
+              name="i-lucide-text-search"
+              class="size-4"
+            />
+            Content search
+          </span>
+          <PostContentFilter v-model="contentFilter" />
+          <span
+            v-if="!contentFilter"
+            class="hidden text-xs text-dimmed md:inline"
+          >
+            Find posts whose content contains exact text, block markup or shortcodes.
+          </span>
+        </template>
+      </UDashboardToolbar>
     </template>
 
     <template #body>
@@ -508,6 +647,30 @@ const columns = computed<TableColumn<WpPost>[]>(() => {
           color="info"
           variant="subtle"
           icon="i-lucide-info"
+        />
+
+        <div
+          v-if="scanning"
+          class="space-y-2 rounded-md border border-default px-3 py-2"
+        >
+          <p class="text-sm text-muted">
+            Scanning posts…
+            <template v-if="scanProgress">
+              {{ number.format(scanProgress.scanned) }} of {{ number.format(scanProgress.total) }} posts
+            </template>
+          </p>
+          <UProgress
+            :model-value="scanProgress?.scanned ?? null"
+            :max="scanProgress?.total || 100"
+            size="sm"
+          />
+        </div>
+        <UAlert
+          v-else-if="scanActive && scan.data.value?.truncated"
+          :description="`Only the first ${number.format(SCAN_MAX_POSTS)} of ${number.format(scan.data.value.total)} posts were scanned. Narrow the other filters to search the rest.`"
+          color="warning"
+          variant="subtle"
+          icon="i-lucide-triangle-alert"
         />
 
         <div
