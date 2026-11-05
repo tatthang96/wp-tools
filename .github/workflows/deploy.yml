@@ -1,0 +1,70 @@
+name: deploy
+
+# Builds the SPA and publishes it to GitHub Pages on every push to main.
+# One-time setup: repository Settings → Pages → Source: "GitHub Actions".
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Let an in-progress deploy finish, but skip queued ones superseded by a newer push.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Install node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Configure Pages
+        id: pages
+        uses: actions/configure-pages@v6
+
+      - name: Generate static SPA
+        run: pnpm generate
+        env:
+          # Project sites live under /<repo>/, e.g. https://tatthang96.github.io/wp-tools/
+          NUXT_APP_BASE_URL: ${{ steps.pages.outputs.base_path }}/
+
+      # GitHub Pages serves 404.html for unknown paths; serving the SPA shell
+      # there lets deep links like /wp-tools/admin/posts load the app.
+      - name: SPA fallback
+        run: cp .output/public/200.html .output/public/404.html
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: .output/public
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5

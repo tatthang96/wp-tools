@@ -18,7 +18,7 @@ pnpm lint         # ESLint (@nuxt/eslint, stylistic: no trailing commas, 1tbs br
 pnpm typecheck    # nuxt typecheck (vue-tsc)
 ```
 
-There is no test suite. CI (`.github/workflows/ci.yml`) runs `lint` and `typecheck` on push. `pnpm exec eslint --fix <path>` fixes most lint errors, including the `nuxt/nuxt-config-keys-order` rule in `nuxt.config.ts`.
+There is no test suite. CI (`.github/workflows/ci.yml`) runs `lint` and `typecheck` on push. `.github/workflows/deploy.yml` publishes to GitHub Pages on push to `main`. It builds with `NUXT_APP_BASE_URL=/<repo>/` and copies `200.html` to `404.html` so deep links load the SPA. Because of that base path, never hard-code root-absolute asset URLs such as `/favicon.ico`; prefix them with `useRuntimeConfig().app.baseURL`. Router paths (`navigateTo('/admin')`, `to: '/admin/posts'`) are fine. `pnpm exec eslint --fix <path>` fixes most lint errors, including the `nuxt/nuxt-config-keys-order` rule in `nuxt.config.ts`.
 
 ## Architecture
 

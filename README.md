@@ -1,66 +1,82 @@
-# Nuxt Starter Template
+# WP Tools
 
-[![Nuxt UI](https://img.shields.io/badge/Made%20with-Nuxt%20UI-00DC82?logo=nuxt&labelColor=020420)](https://ui.nuxt.com)
+A dashboard for managing WordPress sites from the browser. Sign in with a WordPress **application password** and WP Tools talks directly to your site's REST API. You don't install a plugin on the site and there's no server to run.
 
-Use this template to get started with [Nuxt UI](https://ui.nuxt.com) quickly.
+Built with [Nuxt 4](https://nuxt.com), [Nuxt UI](https://ui.nuxt.com), [Pinia Colada](https://pinia-colada.esm.dev) and [VueUse](https://vueuse.org).
 
-- [Live demo](https://starter-template.nuxt.dev/)
-- [Documentation](https://ui.nuxt.com/docs/getting-started/installation/nuxt)
+## Features
 
-<a href="https://starter-template.nuxt.dev/" target="_blank">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://ui.nuxt.com/assets/templates/nuxt/starter-dark.png">
-    <source media="(prefers-color-scheme: light)" srcset="https://ui.nuxt.com/assets/templates/nuxt/starter-light.png">
-    <img alt="Nuxt Starter Template" src="https://ui.nuxt.com/assets/templates/nuxt/starter-light.png" width="830" height="466">
-  </picture>
-</a>
+- **Several sites:** connect any number of WordPress sites (or multisite subsites) and switch between them from the sidebar. Each browser tab can work on a different site.
+- **Overview:** the number of connected sites, active and inactive plugins, and users.
+- **Posts:** manage posts, pages and any custom post type exposed to the REST API.
+  - Filter by status, author, categories, tags and other taxonomies, and date. Search and sort the list.
+  - **Meta search:** find posts by custom field value, with conditions that suit the field type (text, number, true/false).
+  - **Content search:** find exact text in `post_content`, including block markup and shortcodes.
+  - **Edit in a drawer:** change the title, slug, status, sticky flag, raw HTML content, excerpt, terms and custom fields without opening WP Admin. If the post changed on the site in the meantime, you're warned before your save would overwrite it.
+  - Publish, trash, restore and permanently delete, one post at a time or in bulk.
+- **Blocks:**
+  - **Block types:** browse every registered block by category and provider, and see its attributes, styles and variations.
+    - Hide or show blocks in your own block editor.
+    - Jump to the posts that use a block.
+  - **Patterns:** list synced and unsynced patterns. Edit, trash, restore or delete them.
+- **Users:** search and filter by role.
+- **Settings:** your connected sites and the connection details for each.
 
-> The starter template for Vue is on https://github.com/nuxt-ui-templates/starter-vue.
+The dashboard adapts to your WordPress role. When your role lacks a capability (for example, editors can't list plugins or every user), it shows what it can and explains what's missing instead of failing.
 
-## Quick Start
+## Connecting a site
 
-```bash [Terminal]
-npm create nuxt@latest -- -t ui
-```
+1. In WP Admin, go to **Users → Profile → Application Passwords**. Enter a name and click **Add New Application Password**.
+2. Open WP Tools. Enter the site URL, your username or email, and the generated password.
+3. Tick **Remember me** to keep the site connected in this browser. Otherwise it's forgotten when the tab closes.
 
-## Deploy your own
+Requirements:
+- WordPress 5.6 or later, with application passwords enabled and served over HTTPS (or on a local development site).
+- The REST API reachable from the browser. Both pretty permalinks (`/wp-json/`) and plain permalinks (`?rest_route=`) work.
+- Some features need newer versions: hiding blocks needs WordPress 6.1+, and the content-only search filter works best on 6.4+.
 
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-name=starter&repository-url=https%3A%2F%2Fgithub.com%2Fnuxt-ui-templates%2Fstarter&demo-image=https%3A%2F%2Fui.nuxt.com%2Fassets%2Ftemplates%2Fnuxt%2Fstarter-dark.png&demo-url=https%3A%2F%2Fstarter-template.nuxt.dev%2F&demo-title=Nuxt%20Starter%20Template&demo-description=A%20minimal%20template%20to%20get%20started%20with%20Nuxt%20UI.)
+> Credentials are stored only in this browser (localStorage for remembered sites, sessionStorage otherwise) and are sent only to the WordPress site you connected. Use WP Tools on devices you trust, and revoke the application password in WP Admin when you no longer need it.
 
-## Setup
+## Limitations
 
-Make sure to install the dependencies:
+These come from WordPress's core REST API:
+- **Meta search** sees only custom fields registered with `show_in_rest`. Private fields such as `_price` aren't visible.
+- **Meta and content searches** run in your browser and check at most 5,000 posts at a time.
+- **Hidden blocks:** a block can only be hidden from your own editor. Disabling a block for the whole site needs PHP (`allowed_block_types_all`).
+- **Missing from the REST API:** blocks registered only in JavaScript, a multisite network's list of sites, user roles, and plugin updates.
+
+## Development
 
 ```bash
 pnpm install
+pnpm dev          # http://localhost:3000
+pnpm lint
+pnpm typecheck
 ```
 
-## Development Server
+See [CLAUDE.md](CLAUDE.md) for the architecture and coding conventions.
 
-Start the development server on `http://localhost:3000`:
+## Deployment
+
+WP Tools is a static single-page app (`ssr: false`).
+
+### GitHub Pages (automatic)
+
+`.github/workflows/deploy.yml` builds the app and publishes it to GitHub Pages on every push to `main`. You can also run it by hand from the Actions tab. The app is served at `https://<user>.github.io/<repo>/` (for this repo, https://tatthang96.github.io/wp-tools/).
+
+One-time setup: in the repository, open **Settings → Pages** and set **Source** to **GitHub Actions**.
+
+The site is served over HTTPS, so browsers block connections to WordPress sites served over plain `http://`, including local sites like `http://mysite.test`. Use `pnpm dev` for those.
+
+### Any static host
 
 ```bash
-pnpm dev
+pnpm generate     # outputs .output/public
+pnpm preview      # preview the build locally
 ```
 
-## Production
+Serve `.output/public` from any static host. Configure the host to fall back to `200.html` (or `index.html`) for unknown routes so client-side routing works. To serve from a subpath, set `NUXT_APP_BASE_URL` when building, e.g. `NUXT_APP_BASE_URL=/tools/ pnpm generate`.
 
-This app runs as a client-side SPA (`ssr: false`). Generate the static files:
+## License
 
-```bash
-pnpm generate
-```
-
-The output in `.output/public` can be served by any static host. Configure the host to fall back to `200.html` (or `index.html`) for unknown routes so client-side routing works.
-
-Locally preview the generated build:
-
-```bash
-pnpm preview
-```
-
-Check out the [deployment documentation](https://nuxt.com/docs/getting-started/deployment) for more information.
-
-## Renovate integration
-
-Install [Renovate GitHub app](https://github.com/apps/renovate/installations/select_target) on your repository and you are good to go.
+[MIT](LICENSE)
